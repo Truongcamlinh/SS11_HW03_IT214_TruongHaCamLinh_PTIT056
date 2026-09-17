@@ -1,0 +1,23 @@
+server:
+  port: ${SERVER_PORT:8081}
+
+spring:
+  application:
+    name: inventory-service
+  kafka:
+    bootstrap-servers: ${KAFKA_BOOTSTRAP_SERVERS:localhost:9092}
+    consumer:
+      # Ba instance Inventory phai dung chung group de chia tai.
+      group-id: inventory-group
+      auto-offset-reset: earliest
+      key-deserializer: org.apache.kafka.common.serialization.StringDeserializer
+      value-deserializer: org.springframework.kafka.support.serializer.JsonDeserializer
+      properties:
+        spring.json.trusted.packages: "*"
+        spring.json.use.type.headers: false
+        spring.json.value.default.type: com.storex.inventory.model.OrderCreatedEvent
+
+storex:
+  kafka:
+    order-topic: storex-order-events
+

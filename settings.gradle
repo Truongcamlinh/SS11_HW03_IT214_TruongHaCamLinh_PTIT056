@@ -1,0 +1,2 @@
+rootProject.name = 'SS11_HW03_IT214_TruongHaCamLinh_PTIT056'
+include 'order-producer', 'inventory-service', 'loyalty-service'
