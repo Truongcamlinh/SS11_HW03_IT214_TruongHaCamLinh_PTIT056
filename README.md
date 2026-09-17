@@ -1,11 +1,5 @@
 # SS11 HW03 - Cơ chế Fan-out và Consumer Group trong Kafka
 
-**Sinh viên:** Trương Hà Cẩm Linh
-
-**Lớp:** IT214
-
-**Mã sinh viên:** PTIT056
-
 ## 1. Mô hình bài làm
 
 Dự án gồm ba module:
