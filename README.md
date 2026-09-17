@@ -1,20 +1,22 @@
-# SS11 HW03 - Fan-out va Consumer Group trong Kafka
+# SS11 HW03 - Cơ chế Fan-out và Consumer Group trong Kafka
 
-**Sinh vien:** Truong Ha Cam Linh  
-**Lop:** IT214  
-**Ma sinh vien:** PTIT056
+**Sinh viên:** Trương Hà Cẩm Linh
 
-## 1. Mo hinh bai lam
+**Lớp:** IT214
 
-Project gom ba module:
+**Mã sinh viên:** PTIT056
+
+## 1. Mô hình bài làm
+
+Dự án gồm ba module:
 
 ```text
-order-producer     -> gui order.created vao storex-order-events
-inventory-service -> tru kho
-loyalty-service   -> cong diem thanh vien
+order-producer     -> gửi sự kiện order.created vào storex-order-events
+inventory-service -> trừ số lượng hàng trong kho
+loyalty-service   -> cộng điểm thành viên
 ```
 
-Topic `storex-order-events` co 3 partition. Inventory va Loyalty doc cung topic nhung thuoc hai consumer group khac nhau:
+Topic `storex-order-events` có 3 partition. Inventory Service và Loyalty Service cùng đọc một topic nhưng thuộc hai consumer group khác nhau:
 
 ```text
 storex-order-events
@@ -22,15 +24,17 @@ storex-order-events
   `-- loyalty-group: loyalty-service
 ```
 
-Moi consumer group co offset rieng, vi vay ca Inventory va Loyalty deu nhan duoc 100% su kien. Ben trong `inventory-group`, Kafka chia cac partition cho ba instance de moi don chi bi tru kho mot lan.
+Mỗi consumer group quản lý offset riêng. Vì vậy, cả Inventory Service và Loyalty Service đều nhận được 100% sự kiện đơn hàng. Bên trong `inventory-group`, Kafka chia các partition cho ba instance để mỗi đơn hàng chỉ bị trừ kho một lần.
 
-## 2. Phan tich BUG-04
+## 2. Phân tích lỗi BUG-04
 
-Neu ca hai service deu dat `group-id: storex-system`, Kafka xem chung la cac consumer cung mot nhom. Trong mot consumer group, moi partition tai mot thoi diem chi duoc giao cho mot consumer. Vi the mot message co the duoc Inventory nhan, message khac lai do Loyalty nhan. Ket qua la co don bi tru kho nhung khong cong diem, hoac cong diem nhung khong tru kho.
+Nếu Inventory Service và Loyalty Service đều đặt `group-id: storex-system`, Kafka sẽ xem chúng là các consumer thuộc cùng một nhóm. Trong một consumer group, mỗi partition tại một thời điểm chỉ được giao cho một consumer.
 
-Day khong phai fan-out. Consumer group dung de **chia tai trong cung mot nghiep vu**, khong dung de gom cac nghiep vu khac nhau.
+Do đó, một message có thể được Inventory Service nhận, trong khi message khác lại do Loyalty Service nhận. Hậu quả là có đơn hàng bị trừ kho nhưng không được cộng điểm hoặc được cộng điểm nhưng không bị trừ kho.
 
-Cau hinh dung:
+Đây không phải là cơ chế fan-out. Consumer group được dùng để **chia tải giữa các instance thực hiện cùng một nghiệp vụ**, không được dùng để gộp các service có nghiệp vụ khác nhau.
+
+Cấu hình đúng:
 
 ```yaml
 # inventory-service
@@ -40,32 +44,63 @@ spring.kafka.consumer.group-id: inventory-group
 spring.kafka.consumer.group-id: loyalty-group
 ```
 
-Ba instance Inventory van phai cung dung `inventory-group`. Nho vay chung chia message voi nhau, con `loyalty-group` van co ban sao logic cua toan bo message.
+Ba instance Inventory Service vẫn phải dùng chung `inventory-group`. Nhờ vậy, chúng chia message với nhau, còn `loyalty-group` vẫn nhận được toàn bộ message để thực hiện cộng điểm.
 
-## 3. REQ-01 - So partition toi thieu
+## 3. REQ-01 - Số lượng partition tối thiểu
 
-De 3 instance Inventory cung hoat dong, topic can **toi thieu 3 partition**. Kafka chi gan mot partition cho toi da mot consumer trong cung group tai mot thoi diem. Neu topic chi co 2 partition thi instance thu ba se khong duoc gan partition va phai cho.
+Để 3 instance Inventory Service cùng hoạt động hiệu quả, topic cần có **tối thiểu 3 partition**.
 
-Voi 3 partition va 3 instance, moi instance thuong nhan mot partition. Khi key phan bo tuong doi deu, tai xu ly xap xi 33% cho moi instance. Kafka khong cam ket chinh xac 33% vi so message tren tung partition co the chenh lech.
+Kafka chỉ giao một partition cho tối đa một consumer trong cùng consumer group tại một thời điểm. Nếu topic chỉ có 2 partition thì instance Inventory thứ ba sẽ không được giao partition và phải ở trạng thái chờ.
 
-Neu sau nay muon scale toi 6 Inventory instance thi nen tao topic co it nhat 6 partition. Tang partition lam thay doi phep anh xa key, nen can du tru scale ngay khi thiet ke topic.
+Với 3 partition và 3 instance, thông thường mỗi instance được giao một partition. Khi key và số lượng message được phân bố tương đối đều, mỗi instance xử lý khoảng 33% số đơn hàng.
 
-## 4. Chay bai
+Kafka không cam kết chính xác mỗi instance nhận đúng 33%, vì lượng message trong từng partition có thể chênh lệch. Nếu sau này hệ thống muốn chạy tối đa 6 instance Inventory Service thì topic nên có ít nhất 6 partition.
 
-Can Kafka tai `localhost:9092`. Producer tu tao topic 3 partition khi khoi dong.
+## 4. Cơ chế Fan-out
+
+Kafka thực hiện fan-out thông qua các consumer group khác nhau:
+
+1. Producer gửi một message vào topic `storex-order-events`.
+2. `inventory-group` nhận message để xử lý trừ kho.
+3. `loyalty-group` cũng nhận chính message đó để cộng điểm.
+4. Offset của hai group được lưu độc lập nên hai nghiệp vụ không tranh giành message của nhau.
+
+Khi có nhiều instance trong `inventory-group`, Kafka chỉ giao mỗi message cho một instance của nhóm. Vì vậy hệ thống vừa bảo đảm fan-out giữa các service, vừa bảo đảm chia tải giữa các instance Inventory Service.
+
+## 5. Cấu trúc thư mục
+
+```text
+.
+|-- order-producer/     # API tạo đơn và gửi sự kiện lên Kafka
+|-- inventory-service/ # Consumer trừ kho, group-id: inventory-group
+|-- loyalty-service/   # Consumer cộng điểm, group-id: loyalty-group
+|-- build.gradle
+|-- settings.gradle
+`-- README.md
+```
+
+## 6. Hướng dẫn chạy
+
+Máy cần có Kafka đang chạy tại `localhost:9092`. Khi Order Producer khởi động, ứng dụng sẽ tạo topic `storex-order-events` gồm 3 partition nếu topic chưa tồn tại.
+
+Khởi động Producer và Loyalty Service:
 
 ```bash
 ./gradlew :order-producer:bootRun
 ./gradlew :loyalty-service:bootRun
+```
 
+Khởi động ba instance Inventory Service ở ba cửa sổ terminal khác nhau:
+
+```bash
 INSTANCE_ID=inventory-1 SERVER_PORT=8081 ./gradlew :inventory-service:bootRun
 INSTANCE_ID=inventory-2 SERVER_PORT=8082 ./gradlew :inventory-service:bootRun
 INSTANCE_ID=inventory-3 SERVER_PORT=8083 ./gradlew :inventory-service:bootRun
 ```
 
-Sau khi ba Inventory instance vao cung group, Kafka se rebalance va gan moi partition cho mot instance.
+Sau khi ba instance tham gia cùng `inventory-group`, Kafka thực hiện rebalance và giao mỗi partition cho một instance.
 
-## 5. Gui message thu nghiem
+## 7. Gửi sự kiện kiểm thử
 
 ```bash
 curl -X POST http://localhost:8080/api/orders \
@@ -73,16 +108,17 @@ curl -X POST http://localhost:8080/api/orders \
   -d '{"orderId":"ORD-1001","customerId":"CUS-01","totalAmount":500000}'
 ```
 
-Gui nhieu don voi `orderId` khac nhau de thay log duoc chia cho ba Inventory. Moi don dong thoi xuat hien mot lan trong log Loyalty.
+Gửi nhiều đơn hàng có `orderId` khác nhau để quan sát log được chia cho ba Inventory Service. Mỗi đơn hàng đồng thời xuất hiện một lần trong log của Loyalty Service.
 
-## 6. Ket qua mong doi
+## 8. Kết quả mong đợi
 
-- Inventory va Loyalty deu nhan du 100% cac don hang theo nghiep vu cua minh.
-- Moi don chi duoc mot Inventory instance trong `inventory-group` xu ly.
-- Ba Inventory instance duoc gan ba partition va chia tai gan deu.
-- Khi mot Inventory dung, Kafka rebalance partition cho hai instance con.
+- Inventory Service và Loyalty Service đều nhận đủ 100% sự kiện theo nghiệp vụ của mình.
+- Mỗi đơn hàng chỉ được một instance trong `inventory-group` xử lý.
+- Ba instance Inventory Service được giao ba partition và chia tải tương đối đều.
+- Khi một instance Inventory dừng, Kafka tự động rebalance partition cho các instance còn lại.
+- Không xảy ra tình trạng đơn hàng bị trừ kho nhưng không được cộng điểm do dùng sai group-id.
 
-## 7. Build
+## 9. Build dự án
 
 ```bash
 ./gradlew clean build
